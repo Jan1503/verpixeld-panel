@@ -10,7 +10,7 @@ The GitHub repository name can be changed later (Settings → General → Rename
 
 - Panel: indoor 256×128 ICND1065L (HUB320, 64-scan, 74HC595 row mux)
 - Controller: WIZnet W6300-EVB-Pico2 (RP2350 + W6300 Ethernet)
-- Host stream: UDP port 7777 (verpixeld / RgbPanel)
+- Host stream: UDP port 7777 (verpixeld / [PixPlane](https://github.com/Jan1503/pixplane))
 - Config UI: `http://<panel-ip>:5000` (OTA on the same page)
 
 ## Firmware 1.3

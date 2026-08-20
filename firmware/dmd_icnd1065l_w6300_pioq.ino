@@ -107,7 +107,7 @@ DMD_RGB_ICND1065L_HUB320<RGB128x128plainS64, COLOR_4BITS>
 #define W6_CLKDIV 2.0f   // 33 MHz SCLK * 4 bits = ~132 Mbit/s. Tune up (3/4) only if unstable.
 #define QSPI_MODE_QUAD 0x80  // MOD[1:0]=10 in opcode bits [7:6]
 
-#define FW_VERSION "1.6"
+#define FW_VERSION "1.7"
 
 static uint8_t W6_MAC[6];
 static uint8_t g_uid[8];
@@ -145,8 +145,8 @@ static volatile bool     g_webCmdPending = false;
 // colorMode: 0 = 14-bit / DOUBLE-buffer (max colour depth; RX core stalls per frame -> more UDP drops
 //            at high fps), 1 = 8-bit / TRIPLE-buffer (RX core never stalls -> minimal drops + max fps,
 //            256 shades). BRIGHTNESS is identical in both modes: gclk_bits stays 14 (full GCLK train);
-//            only the stored plane count (buffer RAM) changes. Applied at boot (save + reboot); the host
-//            must send matching ColorBits (14 or 8).
+//            only the stored plane count (buffer RAM) changes. Boot default via save+reboot; live via
+//            `livemode 8|14` (no persist). The host must send matching ColorBits (14 or 8).
 #define COLORMODE_PLANES(m) ((m) ? 8 : 14)
 #define COLORMODE_NBUF(m)   ((m) ? 3 : 2)
 struct PersistCfg {
@@ -166,8 +166,12 @@ static const PersistCfg CFG_DEFAULT = {
 static float   g_dclkMHz  = 15.6f;   // mirror of the live DCLK (setDataClkMHz doesn't expose a getter)
 static uint8_t g_gclkBits = HUB_NPLANES;   // greyscale bits = data planes (keep in lock-step)
 static uint8_t g_netMode  = 0;                          // configured mode (DHCP/static)
-static uint8_t g_colorMode = 0;                         // 0 = 14-bit/double, 1 = 8-bit/triple (boot-applied)
+static uint8_t g_colorMode = 0;                         // 0 = 14-bit/double, 1 = 8-bit/triple
 static volatile bool g_otaActive = false;               // true while core1 is flashing an OTA upload -> core0 holds
+static volatile bool g_holdRx = false;                  // livemode: core1 drain-only, no assemble
+static volatile bool g_rxHeld = false;                  // core1 acked g_holdRx (not inside submitFill)
+static volatile bool g_rxReset = false;                 // core1: drop in-flight frame after a live reconfigure
+static volatile int  g_liveReq = 0;                     // 8 or 14 = pending live switch on core0 loop
 static uint8_t g_cfgIp[4]   = { 192, 168, 10, 181 };    // configured static IP / DHCP fallback
 static uint8_t g_cfgMask[4] = { 255, 255, 255, 0 };
 static uint8_t g_cfgGw[4]   = { 192, 168, 10, 1 };
@@ -219,7 +223,7 @@ static void applyCfg(const PersistCfg &c)
     dmd.setGclkBits(c.gclkBits);
     g_dclkMHz = dmd.setDataClkMHz(c.dclkMHz);
     g_netMode = c.netMode;
-    g_colorMode = c.colorMode;   // buffer/depth mode is applied at BOOT (see setup) -> save + reboot
+    g_colorMode = c.colorMode;   // buffer/depth: boot default; live `livemode` does not persist
     memcpy(g_cfgIp, c.ip, 4); memcpy(g_cfgMask, c.mask, 4); memcpy(g_cfgGw, c.gw, 4);
     memcpy(g_panelName, c.name, sizeof(g_panelName));
     g_panelName[sizeof(g_panelName) - 1] = 0;
@@ -248,9 +252,7 @@ void setup()
     dmd.init();
     dmd.applyPanelRegsRGB(SLOT0, regGreen, SLOT2, REG_CNT);
     loadCfg();   // persisted values, or CFG_DEFAULT (14-bit/double, DCLK 15.6)
-    // Apply the persisted colour/buffer mode ONCE, here at boot (never live): 14-bit/double for max
-    // colour, or 8-bit/triple for a non-stalling RX handoff (minimal UDP drops, max fps). Reallocates
-    // the frame buffers to the matching depth+count before the panel scans or the RX core streams.
+    // Apply the persisted colour/buffer mode at boot. Live switches use `livemode` (core0 loop).
     {
         uint8_t planes = COLORMODE_PLANES(g_colorMode), nbuf = COLORMODE_NBUF(g_colorMode);
         dmd.reconfigure(planes, nbuf);   // sets nPlanes (buffer depth) + buffer count only
@@ -323,6 +325,38 @@ void loop()
     static uint32_t introStart = 0;
 
     if (g_otaActive) { delay(5); return; }   // firmware update in progress on core1 -> hold the panel
+
+    // Live colour-depth switch: keep adopting frames until the RX core is drain-only, then realloc.
+    if (g_liveReq) {
+        static uint32_t liveWait = 0;
+        if (!g_rxHeld) {
+            if (!liveWait) liveWait = millis();
+            dmd.acquireFront();
+            dmd.swapBuffers(true);
+            if ((uint32_t)(millis() - liveWait) < 500) return;
+            Serial.println(F("[cfg] livemode aborted: RX core still busy"));
+            g_holdRx = false;
+            g_liveReq = 0;
+            liveWait = 0;
+            return;
+        }
+        liveWait = 0;
+        uint8_t mode = (g_liveReq <= 8) ? 1 : 0;
+        if (mode != g_colorMode) {
+            g_colorMode = mode;
+            dmd.reconfigure(COLORMODE_PLANES(mode), COLORMODE_NBUF(mode));
+            dmd.setGclkBits(14); g_gclkBits = 14;
+            dmd.clear16();
+        }
+        g_rxReset = true;
+        __sync_synchronize();
+        g_holdRx = false;
+        g_liveReq = 0;
+        dmd.swapBuffers(true);   // restart GCLK after reconfigure's stop_GCLK
+        Serial.printf("[cfg] live %d-bit/%s\n", COLORMODE_PLANES(g_colorMode),
+                      g_colorMode ? "triple" : "double");
+        return;
+    }
 
     if (g_testMode) {
         // Test mode: keep ADOPTING core1's frame buffer (acquireFront) so a racy submitFill on core1 can
@@ -438,6 +472,14 @@ void loop1()
     static uint16_t curId = 0xFFFF, curN = 0, haveCnt = 0;
     static uint8_t fragBits[32];
 
+    if (g_holdRx) g_rxHeld = true;
+    else g_rxHeld = false;
+    if (g_rxReset) {
+        curId = 0xFFFF; curN = 0; haveCnt = 0;
+        memset(fragBits, 0, sizeof(fragBits));
+        g_rxReset = false;
+    }
+
     uint16_t rsr = w6_rd16(BSB_S0_REG, 0x0224);
     uint16_t rd = w6_rd16(BSB_S0_REG, 0x0228);
     const uint16_t want = (uint16_t)(8 + CHUNK + UDP_HDR);   // packet-info(8) + max payload
@@ -459,10 +501,9 @@ void loop1()
         w6_wr8(BSB_S0_REG, 0x0010, 0x40);
         rsr = (uint16_t)(rsr - (8 + dsize));
 
-        // In test mode core0 stops consuming frames (no acquireFront), so submitFill() would block on the
-        // double-buffer handoff and stall this core (killing web_poll). Keep draining, but don't assemble
-        // or submit while testing.
-        if (g_testMode) continue;
+        // In test mode / livemode core0 may not be adopting, so submitFill() would stall this core.
+        // Keep draining, but don't assemble or submit.
+        if (g_testMode || g_holdRx) continue;
 
         const uint8_t *pl = frag + 8;   // payload: [frameId, fragIdx, nThis, flags, data...]
         uint8_t frameId = pl[0], fragIdx = pl[1], nThis = pl[2], flags = pl[3];

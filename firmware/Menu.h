@@ -20,8 +20,9 @@ static void printHelp()
     Serial.println(F("  k <mhz>        data clock MHz (higher = faster upload/refresh + brighter; <=19)"));
     Serial.println(F("  g <bits>       greyscale bit width (8..14; must match verpixeld ColorBits)"));
     Serial.println(F("  mode 8 | 14    8=8-bit/triple-buffer (min UDP drops, max fps), 14=14-bit/double"));
-    Serial.println(F("                 (max colour). Set verpixeld ColorBits to match. save + reboot to apply."));
-    Serial.println(F("  applymode 8|14 colour mode + save + reboot (web UI)"));
+    Serial.println(F("                 (max colour). save + reboot to persist as boot default."));
+    Serial.println(F("  livemode 8|14  same switch live (no save, no reboot; brief hitch)"));
+    Serial.println(F("  applymode 8|14 colour mode + save + reboot (web UI boot default)"));
     Serial.println(F("  r <c> <i> <hx> set config register [i] on data line c (0/1/2) to hex word"));
     Serial.println(F("  a <i> <hx>     set config register [i] on ALL three data lines at once"));
     Serial.println(F("\n  (Boundary/seam column correction now runs host-side in the RgbPanel streaming"));
@@ -62,6 +63,19 @@ static void processCmd(char *b)
         saveCfg();
         Serial.printf("[cfg] mode=%d-bit saved, rebooting...\n", m);
         Serial.flush(); delay(80); rp2040.reboot();
+        return;
+    }
+    if (!strncmp(b, "livemode", 8)) {
+        int m = atoi(b + 8);
+        if (m != 8 && m != 14) { Serial.println(F("usage: livemode 8 | 14")); return; }
+        uint8_t want = (m <= 8) ? 1 : 0;
+        if (want == g_colorMode && !g_liveReq) {
+            Serial.printf("[cfg] already %d-bit/%s\n", m, want ? "triple" : "double");
+            return;
+        }
+        g_holdRx = true;
+        g_liveReq = m;
+        Serial.printf("[cfg] livemode %d-bit (not saved)\n", m);
         return;
     }
     if (!strncmp(b, "applynet", 8)) {

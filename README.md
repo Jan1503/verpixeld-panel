@@ -13,15 +13,16 @@ The GitHub repository name can be changed later (Settings → General → Rename
 - Host stream: UDP port 7777 (verpixeld / [PixPlane](https://github.com/Jan1503/pixplane))
 - Config UI: `http://<panel-ip>:5000` (OTA on the same page)
 
-## Firmware 1.6
+## Firmware 1.7
 
+- `livemode 8|14`: live colour/buffer realloc (no save, no reboot). Host uses this when visible canvases change depth.
 - UDP v2: fragment deltas + 1 s keyframes (keyframes skip the 224 KB fill-copy; no RX-discard during stall)
 - Config UI: live/idle badge, drop-rate tiles, OTA progress; colour/network apply save+reboot in one step
 - HTTP GET replies paced (~1 KB per poll) so a page load cannot stall the UDP drain
 - Quad QSPI PIO transport for the W6300
 - PIO-driven 595 mux (pio2), scan ISR stays on PIO0
 - SRAM 5×7 font boot splash (no Adafruit GFX fonts in the upload path)
-- 14-bit greyscale / double-buffer, optional 8-bit / triple-buffer (save + reboot)
+- 14-bit greyscale / double-buffer, optional 8-bit / triple-buffer (`applymode` = persist + reboot; `livemode` = live)
 - OTA: LittleFS staging, FQBN must include an FS partition
 
 The steady brightness offset of the seam columns (63/64, 127/128, 191/192) is a chip/panel artifact. It is not fixed in software.

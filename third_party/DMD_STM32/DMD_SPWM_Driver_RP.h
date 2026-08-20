@@ -1607,14 +1607,15 @@ public:
 #endif
 	}
 
-	// Boot-time (re)allocation of the frame buffer(s) for a given colour depth + buffer count. Lets the
-	// sketch pick the mode from persisted config at startup: {14 planes, 2 buffers} = max colour depth
-	// (double-buffer, RX core stalls per frame), or {8 planes, 3 buffers} = triple-buffer (RX core never
-	// stalls -> minimal UDP drops, max fps). MUST be called before the panel scans/streams (i.e. before
-	// the first swapBuffers / any rawBuf16 use), never live.
+	// (Re)allocate the frame buffer(s) for a given colour depth + buffer count:
+	// {14 planes, 2 buffers} = max colour depth (double-buffer, RX core stalls per frame), or
+	// {8 planes, 3 buffers} = triple-buffer (RX core never stalls -> minimal UDP drops, max fps).
+	// Safe live: stops GCLK so DMA is not reading the buffers being freed. The sketch must pause
+	// the RX core (no memcpy / submitFill) across this call, then resume scan with swapBuffers().
 	void reconfigure(uint8_t planes, uint8_t nbuf)
 	{
 #if HUB_DOUBLE_BUFFER
+		this->stop_GCLK();
 		if (planes < 1) planes = 1;
 		if (planes > 14) planes = 14;
 		if (nbuf < 2) nbuf = 2;

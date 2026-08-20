@@ -93,6 +93,11 @@ DMD_RGB_ICND1065L_HUB320<RGB128x128plainS64, COLOR_4BITS>
 #define WEB_PORT 5000   // config web server (unobtrusive, non-default port)
 #define DISC_PORT 7778  // UDP probe / announce (not the frame socket)
 #define CHUNK 1440
+// UDP payload v2: [frameId:1][fragIdx:1][nThis:1][flags:1] + chunk
+// flags: 0x01 keyframe (all slots), 0x02 commit (last packet of this frame)
+#define UDP_HDR 4
+#define UDP_FLAG_KEY 0x01
+#define UDP_FLAG_COMMIT 0x02
 // W6300 socket RX/TX buffer sizes MUST be powers of two (1/2/4/8/16 KB); the sum per direction must fit
 // the pool. Socket 0 (stream) = 16 KB, socket 1 (web) = 2 KB. 16 KB still buffers ~6.7 ms at 19 Mbit/s,
 // well above the sub-millisecond core1 stalls, so the stream is unaffected.
@@ -102,7 +107,7 @@ DMD_RGB_ICND1065L_HUB320<RGB128x128plainS64, COLOR_4BITS>
 #define W6_CLKDIV 2.0f   // 33 MHz SCLK * 4 bits = ~132 Mbit/s. Tune up (3/4) only if unstable.
 #define QSPI_MODE_QUAD 0x80  // MOD[1:0]=10 in opcode bits [7:6]
 
-#define FW_VERSION "1.3"
+#define FW_VERSION "1.6"
 
 static uint8_t W6_MAC[6];
 static uint8_t g_uid[8];
@@ -435,14 +440,14 @@ void loop1()
 
     uint16_t rsr = w6_rd16(BSB_S0_REG, 0x0224);
     uint16_t rd = w6_rd16(BSB_S0_REG, 0x0228);
-    const uint16_t want = (uint16_t)(8 + CHUNK + 3);   // packet-info(8) + max payload
+    const uint16_t want = (uint16_t)(8 + CHUNK + UDP_HDR);   // packet-info(8) + max payload
 
     while (rsr >= 8) {
         // One combined read: packet-info + payload (+ possibly start of next datagram, discarded).
         uint16_t rlen = (rsr < want) ? rsr : want;
         w6_read_rx(rd, frag, rlen);
         uint16_t dsize = (uint16_t)(((frag[0] & 0x07) << 8) | frag[1]);
-        if (dsize < 3 || dsize > (CHUNK + 3)) {   // corrupt header -> flush socket, resync
+        if (dsize < UDP_HDR || dsize > (CHUNK + UDP_HDR)) {   // corrupt header -> flush socket, resync
             rd = (uint16_t)(rd + rsr);
             w6_wr16(BSB_S0_REG, 0x0228, rd); w6_wr8(BSB_S0_REG, 0x0010, 0x40);
             g_drop++; break;
@@ -459,20 +464,28 @@ void loop1()
         // or submit while testing.
         if (g_testMode) continue;
 
-        const uint8_t *pl = frag + 8;   // payload: [frameId, fragIdx, nFrags, data...]
-        uint8_t frameId = pl[0], fragIdx = pl[1], nFrags = pl[2];
-        uint32_t chunkLen = (uint32_t)(dsize - 3);
+        const uint8_t *pl = frag + 8;   // payload: [frameId, fragIdx, nThis, flags, data...]
+        uint8_t frameId = pl[0], fragIdx = pl[1], nThis = pl[2], flags = pl[3];
+        uint32_t chunkLen = (uint32_t)(dsize - UDP_HDR);
         if (frameId != curId) {
             if (curN && haveCnt != curN) g_drop++;
-            curId = frameId; curN = nFrags; haveCnt = 0; memset(fragBits, 0, sizeof(fragBits));
+            curId = frameId; curN = nThis; haveCnt = 0; memset(fragBits, 0, sizeof(fragBits));
+            // Deltas patch the last published frame. Keyframes overwrite every slot, so skip the
+            // 224 KB copy (it contended with panel DMA and crushed fps).
+            if (!(flags & UDP_FLAG_KEY)) dmd.copyFrontToFill();
         }
         uint32_t off = (uint32_t)fragIdx * CHUNK;
         if (off + chunkLen <= dmd.buf16Bytes()) {
-            memcpy(dmd.rawBuf16() + off, pl + 3, chunkLen);
+            memcpy(dmd.rawBuf16() + off, pl + UDP_HDR, chunkLen);
             uint8_t m = 1u << (fragIdx & 7);
             if (!(fragBits[fragIdx >> 3] & m)) { fragBits[fragIdx >> 3] |= m; haveCnt++; }
         }
-        if (curN && haveCnt == curN) { g_good++; dmd.submitFill(); curId = 0xFFFF; }
+        if (curN && haveCnt == curN) {
+            g_good++;
+            dmd.submitFill();
+            curId = 0xFFFF;
+            break;   // re-read RSR next iteration; do not keep a stale rd after the stall
+        }
     }
 
     // Stream is drained first; service the config web server after (brief, user-initiated only).

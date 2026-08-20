@@ -1586,12 +1586,24 @@ public:
 		} else {
 			// TRIPLE buffer: publish and immediately take the remaining free buffer -> the RX core never
 			// stalls (no socket-drain gap -> far fewer dropped frames). Usually no wait at all.
-			while (readyIdx >= 0) { }             // only if the panel core hasn't taken the last one yet
+			while (readyIdx >= 0) { }
 			int nf = 3 - frontIdx - fillIdx;      // the remaining free buffer
 			__sync_synchronize();
 			readyIdx = fillIdx;
 			fillIdx = nf;
 		}
+#endif
+	}
+
+	// After a keyframe the fill target is the stale previous front. Call just before applying a
+	// delta so patches land on a copy of the last published frame (not on every keyframe — that
+	// 224 KB memcpy contended with the panel DMA and killed fps).
+	void copyFrontToFill()
+	{
+#if HUB_DOUBLE_BUFFER
+		if (numBuffers < 2 || fillIdx == frontIdx) return;
+		if (!bufs[fillIdx] || !bufs[frontIdx]) return;
+		memcpy(bufs[fillIdx], bufs[frontIdx], buf16Bytes());
 #endif
 	}
 

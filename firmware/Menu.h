@@ -21,6 +21,7 @@ static void printHelp()
     Serial.println(F("  g <bits>       greyscale bit width (8..14; must match verpixeld ColorBits)"));
     Serial.println(F("  mode 8 | 14    8=8-bit/triple-buffer (min UDP drops, max fps), 14=14-bit/double"));
     Serial.println(F("                 (max colour). Set verpixeld ColorBits to match. save + reboot to apply."));
+    Serial.println(F("  applymode 8|14 colour mode + save + reboot (web UI)"));
     Serial.println(F("  r <c> <i> <hx> set config register [i] on data line c (0/1/2) to hex word"));
     Serial.println(F("  a <i> <hx>     set config register [i] on ALL three data lines at once"));
     Serial.println(F("\n  (Boundary/seam column correction now runs host-side in the RgbPanel streaming"));
@@ -29,6 +30,7 @@ static void printHelp()
     Serial.println(F("  net                          show mode + current IP / mask / gateway"));
     Serial.println(F("  net dhcp                     obtain the address via DHCP (default)"));
     Serial.println(F("  net static <ip> <mask> <gw>  use a fixed address"));
+    Serial.println(F("  applynet dhcp | applynet static <ip> <mask> <gw>  save + reboot (web UI)"));
     Serial.println(F("  name [text|-]                show / set friendly name (saved immediately; - clears)"));
     Serial.println(F("\n-- CONFIG PERSISTENCE (flash) --"));
     Serial.println(F("  save           store current settings so they survive reboot"));
@@ -52,6 +54,33 @@ static void processCmd(char *b)
     if (!strcmp(b, "reset")) { resetCfg(); g_testDirty = true; Serial.println(F("[cfg] defaults restored (use 'save' to persist)")); return; }
     if (!strcmp(b, "reboot")) { Serial.println(F("[cfg] rebooting...")); Serial.flush(); delay(80); rp2040.reboot(); return; }
     if (!strcmp(b, "zero"))   { g_good = 0; g_drop = 0; Serial.println(F("[stat] counters cleared")); return; }
+    if (!strncmp(b, "applymode", 9)) {
+        int m = atoi(b + 9);
+        if (m == 8) g_colorMode = 1;
+        else if (m == 14) g_colorMode = 0;
+        else { Serial.println(F("usage: applymode 8 | 14")); return; }
+        saveCfg();
+        Serial.printf("[cfg] mode=%d-bit saved, rebooting...\n", m);
+        Serial.flush(); delay(80); rp2040.reboot();
+        return;
+    }
+    if (!strncmp(b, "applynet", 8)) {
+        char *a = b + 8; while (*a == ' ') a++;
+        if (!strncmp(a, "dhcp", 4)) g_netMode = 0;
+        else if (!strncmp(a, "static", 6)) {
+            char ip[20], mk[20], gw[20];
+            if (sscanf(a + 6, "%19s %19s %19s", ip, mk, gw) != 3 ||
+                !parseIp(ip, g_cfgIp) || !parseIp(mk, g_cfgMask) || !parseIp(gw, g_cfgGw)) {
+                Serial.println(F("usage: applynet static <ip> <mask> <gw>"));
+                return;
+            }
+            g_netMode = 1;
+        } else { Serial.println(F("usage: applynet dhcp | applynet static <ip> <mask> <gw>")); return; }
+        saveCfg();
+        Serial.println(F("[net] saved, rebooting..."));
+        Serial.flush(); delay(80); rp2040.reboot();
+        return;
+    }
     if (!strncmp(b, "net", 3)) { handleNetCmd(b + 3); return; }
     if (!strncmp(b, "name", 4)) {
         char *a = b + 4; while (*a == ' ') a++;

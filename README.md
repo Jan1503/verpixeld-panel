@@ -13,8 +13,11 @@ The GitHub repository name can be changed later (Settings → General → Rename
 - Host stream: UDP port 7777 (verpixeld / [PixPlane](https://github.com/Jan1503/pixplane))
 - Config UI: `http://<panel-ip>:5000` (OTA on the same page)
 
-## Firmware 1.3
+## Firmware 1.6
 
+- UDP v2: fragment deltas + 1 s keyframes (keyframes skip the 224 KB fill-copy; no RX-discard during stall)
+- Config UI: live/idle badge, drop-rate tiles, OTA progress; colour/network apply save+reboot in one step
+- HTTP GET replies paced (~1 KB per poll) so a page load cannot stall the UDP drain
 - Quad QSPI PIO transport for the W6300
 - PIO-driven 595 mux (pio2), scan ISR stays on PIO0
 - SRAM 5×7 font boot splash (no Adafruit GFX fonts in the upload path)
